@@ -23,7 +23,15 @@ public sealed class DescriptionGenerator(ChatClient chatClient) : IDescriptionGe
             ],
             options: GenerationOptions,
             cancellationToken: cancellationToken);
-            
-        return completion.Content[0].Text;
+
+        foreach (var contentPart in completion.Content)
+        {
+            if (!string.IsNullOrWhiteSpace(contentPart.Text))
+            {
+                return contentPart.Text;
+            }
+        }
+
+        throw new InvalidOperationException("The model response did not include text content.");
     }
 }

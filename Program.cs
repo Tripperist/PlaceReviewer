@@ -11,8 +11,18 @@ using PlaceReviewer.Models;
 using PlaceReviewer.Services;
 
 using System.ClientModel;
+using System.Text.Json;
 
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
+
+const string DefaultEvaluationFilePath = "places.json";
+
+JsonSerializerOptions placeJsonOptions = new()
+{
+    AllowTrailingCommas = true,
+    PropertyNameCaseInsensitive = true,
+    ReadCommentHandling = JsonCommentHandling.Skip
+};
 
 builder.Configuration
     .AddJsonFile("appsettings.json", optional: false)
@@ -44,24 +54,11 @@ builder.Services.AddSingleton<IDescriptionGenerator, DescriptionGenerator>();
 
 try
 {
+    Place[] places = GetPlaces(args, placeJsonOptions);
+
     using IHost host = builder.Build();
 
     var generator = host.Services.GetRequiredService<IDescriptionGenerator>();
-
-    Place[] places = args.Contains("--eval", StringComparer.OrdinalIgnoreCase)
-        ? GetPromptEvaluationPlaces()
-        :
-        [
-            new(
-                Name: "Cape Disappointment State Park",
-                Category: "Nature",
-                Location: "Ilwaco, Washington",
-                UserNotes: """
-                    Beautiful coastal park with dramatic cliffs.
-                    Historic lighthouse.
-                    Great place to watch storms and sunsets.
-                    """)
-        ];
 
     bool hasGenerationFailures = false;
 
@@ -87,6 +84,13 @@ try
             Console.Error.WriteLine(ex.Message);
             Console.Error.WriteLine();
         }
+        catch (InvalidOperationException ex)
+        {
+            hasGenerationFailures = true;
+
+            Console.Error.WriteLine($"Generation failed: {ex.Message}");
+            Console.Error.WriteLine();
+        }
     }
 
     if (hasGenerationFailures)
@@ -109,8 +113,104 @@ catch (OptionsValidationException ex)
 
     Environment.ExitCode = 1;
 }
+catch (ArgumentException ex) when (ex.ParamName is null)
+{
+    Console.Error.WriteLine(ex.Message);
+    Console.Error.WriteLine();
+    Console.Error.WriteLine("Usage:");
+    Console.Error.WriteLine("  dotnet run");
+    Console.Error.WriteLine("  dotnet run -- --eval");
+    Console.Error.WriteLine("  dotnet run -- --eval places.json");
+    Console.Error.WriteLine("  dotnet run -- --places places.json");
 
-static Place[] GetPromptEvaluationPlaces() =>
+    Environment.ExitCode = 1;
+}
+catch (IOException ex)
+{
+    Console.Error.WriteLine($"Could not read places file: {ex.Message}");
+
+    Environment.ExitCode = 1;
+}
+catch (JsonException ex)
+{
+    Console.Error.WriteLine($"Could not parse places file: {ex.Message}");
+
+    Environment.ExitCode = 1;
+}
+
+static Place[] GetPlaces(string[] args, JsonSerializerOptions jsonOptions)
+{
+    string? placesFilePath = GetPlacesFilePath(args);
+
+    return placesFilePath is null
+        ? GetDemoPlaces()
+        : LoadPlaces(placesFilePath, jsonOptions);
+}
+
+static string? GetPlacesFilePath(string[] args)
+{
+    for (int index = 0; index < args.Length; index++)
+    {
+        string argument = args[index];
+
+        if (argument.Equals("--eval", StringComparison.OrdinalIgnoreCase))
+        {
+            return GetOptionalOptionValue(args, index) ?? DefaultEvaluationFilePath;
+        }
+
+        if (argument.StartsWith("--eval=", StringComparison.OrdinalIgnoreCase))
+        {
+            return GetAssignedOptionValue(argument, "--eval=");
+        }
+
+        if (argument.Equals("--places", StringComparison.OrdinalIgnoreCase))
+        {
+            return GetRequiredOptionValue(args, index, "--places");
+        }
+
+        if (argument.StartsWith("--places=", StringComparison.OrdinalIgnoreCase))
+        {
+            return GetAssignedOptionValue(argument, "--places=");
+        }
+    }
+
+    return null;
+}
+
+static string? GetOptionalOptionValue(string[] args, int optionIndex)
+{
+    int valueIndex = optionIndex + 1;
+
+    return valueIndex < args.Length && !args[valueIndex].StartsWith("--", StringComparison.Ordinal)
+        ? args[valueIndex]
+        : null;
+}
+
+static string GetRequiredOptionValue(string[] args, int optionIndex, string optionName) =>
+    GetOptionalOptionValue(args, optionIndex)
+    ?? throw new ArgumentException($"Missing filename after {optionName}.");
+
+static string GetAssignedOptionValue(string argument, string optionPrefix)
+{
+    string value = argument[optionPrefix.Length..];
+
+    return string.IsNullOrWhiteSpace(value)
+        ? throw new ArgumentException($"Missing filename after {optionPrefix.TrimEnd('=')}.")
+        : value;
+}
+
+static Place[] LoadPlaces(string filePath, JsonSerializerOptions jsonOptions)
+{
+    string resolvedPath = Path.GetFullPath(filePath);
+    string json = File.ReadAllText(resolvedPath);
+    Place[]? places = JsonSerializer.Deserialize<Place[]>(json, jsonOptions);
+
+    return places is { Length: > 0 }
+        ? places
+        : throw new JsonException("The places file must contain a non-empty JSON array of places.");
+}
+
+static Place[] GetDemoPlaces() =>
 [
     new(
         Name: "Cape Disappointment State Park",
@@ -120,44 +220,5 @@ static Place[] GetPromptEvaluationPlaces() =>
             Beautiful coastal park with dramatic cliffs.
             Historic lighthouse.
             Great place to watch storms and sunsets.
-            """),
-
-    new(
-        Name: "Pike Place Chowder",
-        Category: "Food & Drink",
-        Location: "Seattle, Washington",
-        UserNotes: """
-            Small counter-service stop near Pike Place Market.
-            The line moved faster than expected.
-            Clam chowder was rich and comforting on a rainy afternoon.
-            Good quick lunch while walking around downtown.
-            """),
-
-    new(
-        Name: "The Bradbury Building",
-        Category: "Architecture",
-        Location: "Los Angeles, California",
-        UserNotes: """
-            The lobby has ornate ironwork, open elevators, and a dramatic skylit atrium.
-            Worth a short stop if you like old buildings and interior details.
-            Photos came out well from the ground floor.
-            """),
-
-    new(
-        Name: "Vietnam Veterans Memorial",
-        Category: "Memorial",
-        Location: "Washington, D.C.",
-        UserNotes: """
-            Quiet, reflective place.
-            The dark wall and engraved names made the visit feel personal.
-            Better suited for a slow stop than a quick photo.
-            """),
-
-    new(
-        Name: "Pullout Overlook",
-        Category: "Scenic View",
-        Location: "Highway 101",
-        UserNotes: """
-            Nice view.
             """)
 ];
